@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import FileCard from "./components/FileCard";
 import Toolbar from "./components/Toolbar";
-import PreviewModal from "./components/PreviewModal"; // Import the modal
+import PreviewModal from "./components/PreviewModal";
 
 export default function App() {
   const [drives, setDrives] = useState([]);
@@ -9,71 +9,58 @@ export default function App() {
   const [currentPath, setCurrentPath] = useState("");
   const [uploading, setUploading] = useState(false);
   const [baseURL, setBaseURL] = useState("");
-  const [previewFile, setPreviewFile] = useState(null); // State for the modal
+  const [previewFile, setPreviewFile] = useState(null);
+  const [showUploadModal, setShowUploadModal] = useState(false);
 
-  // 👇 Combined both useEffects into one
   useEffect(() => {
-    // 🧭 Handle /save route FIRST
     const params = new URLSearchParams(window.location.search);
     const path = window.location.pathname;
 
     if (path === "/save" && params.has("ip")) {
       try {
         const encodedIP = params.get("ip");
-        const scannedIP = atob(encodedIP); // 👈 DECODE with atob()
-
+        const scannedIP = atob(encodedIP);
         if (!scannedIP) throw new Error("Empty IP after decoding");
 
-        console.log("📥 Saving decoded backend IP from QR:", scannedIP);
         localStorage.setItem("server_ip", scannedIP);
         alert(`✅ Backend connected to ${scannedIP}`);
-        
-        // Redirect to home
         window.location.replace("/");
-        return; // 👈 Stop execution to prevent detectServerIP
-        
+        return;
       } catch (err) {
         console.error("Failed to decode IP from URL", err);
-        alert("❌ Invalid connection link. Could not decode IP.");
-        window.location.replace("/"); // Redirect home anyway
-        return; // 👈 Stop execution
+        alert("❌ Invalid connection link.");
+        window.location.replace("/");
+        return;
       }
     }
 
-    // 🔹 If not on /save, run normal IP detection
     detectServerIP();
-  }, []); // 👈 Empty dependency array, runs once on mount
+  }, []);
 
-  // 🧩 Detect backend IP dynamically
+  // --- Detect backend IP ---
   const detectServerIP = async () => {
     const cachedIP = localStorage.getItem("server_ip");
 
-    // 🔹 If we already have an IP, try it first
     if (cachedIP) {
       const url = `http://${cachedIP}:8000`;
       try {
-        // 👇 Simple timeout for fetch
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 2000);
-        
+
         const res = await fetch(`${url}/ip`, { signal: controller.signal });
         clearTimeout(timeoutId);
 
         if (res.ok) {
-          console.log("✅ Using cached IP:", cachedIP);
           setBaseURL(url);
           loadDrives(url);
           return;
         }
-      } catch (err) {
-        console.warn("⚠️ Cached IP failed, clearing cache...");
+      } catch {
         localStorage.removeItem("server_ip");
       }
     }
 
-    // 🔹 No valid cached IP, start polling localhost
-    console.log("📡 Polling localhost for backend IP...");
-
+    // Poll localhost
     const pollInterval = 3000;
     const maxAttempts = 40;
     let attempts = 0;
@@ -85,11 +72,9 @@ export default function App() {
         const res = await fetch("http://localhost:8000/ip");
         if (res.ok) {
           const data = await res.json();
-          if (data?.ip) {
+          if (data?.ip && data.ip !== "false") {
             const detectedIP = data.ip;
             const url = `http://${detectedIP}:8000`;
-            console.log("✅ Backend found at:", url);
-
             localStorage.setItem("server_ip", detectedIP);
             clearInterval(intervalId);
             setBaseURL(url);
@@ -97,32 +82,34 @@ export default function App() {
             return;
           }
         }
-      } catch (err) {
-        // silently ignore
-      }
-
-      if (attempts >= maxAttempts) {
-        clearInterval(intervalId);
-        console.warn("❌ Backend IP not found after several tries.");
-      }
+      } catch {}
+      if (attempts >= maxAttempts) clearInterval(intervalId);
     };
 
     intervalId = setInterval(poll, pollInterval);
-    poll(); // run immediately once
+    poll();
   };
 
+  // --- Load drives ---
   const loadDrives = async (url = baseURL) => {
-    // 👈 Use baseURL from state, but allow override
     const effectiveUrl = url || baseURL;
-    if (!effectiveUrl) return; // Don't fetch if no URL
+    if (!effectiveUrl) return;
     try {
       const res = await fetch(`${effectiveUrl}/drives`);
       if (!res.ok) throw new Error("Failed to fetch drives");
       const data = await res.json();
+
       if (data && data.length > 0) {
         setDrives(data);
-        setCurrentPath(data[0]);
-        fetchFiles(data[0], effectiveUrl); // 👈 Pass URL
+        const lastPath = localStorage.getItem("last_path");
+
+        if (lastPath) {
+          setCurrentPath(lastPath);
+          fetchFiles(lastPath, effectiveUrl);
+        } else {
+          setCurrentPath(data[0]);
+          fetchFiles(data[0], effectiveUrl);
+        }
       }
     } catch (error) {
       console.error(error);
@@ -130,10 +117,11 @@ export default function App() {
     }
   };
 
+  // --- Fetch files ---
   const fetchFiles = async (path, url = baseURL) => {
     const effectiveUrl = url || baseURL;
     if (!effectiveUrl) return;
-    
+
     try {
       const res = await fetch(
         `${effectiveUrl}/files?path=` + encodeURIComponent(path)
@@ -145,12 +133,14 @@ export default function App() {
       }
       const data = await res.json();
       setFiles(data);
+      localStorage.setItem("last_path", path); // ✅ Save last opened path
     } catch (error) {
       console.error(error);
       alert("Failed to fetch files.");
     }
   };
 
+  // --- Navigation ---
   const goBack = () => {
     if (currentPath.length <= 3) return;
     let newPath = currentPath.substring(0, currentPath.lastIndexOf("\\"));
@@ -164,6 +154,7 @@ export default function App() {
     fetchFiles(drive);
   };
 
+  // --- Upload file ---
   const handleUpload = async (e) => {
     e.preventDefault();
     if (uploading || !baseURL) return;
@@ -180,6 +171,7 @@ export default function App() {
       if (!res.ok) throw new Error("Upload failed");
       fetchFiles(currentPath);
       e.target.reset();
+      setShowUploadModal(false);
     } catch (error) {
       console.error(error);
       alert("Upload failed. Please try again.");
@@ -188,25 +180,17 @@ export default function App() {
     }
   };
 
-  // --- Modal Handlers ---
-  
-  // Create a handler to open the preview
+  // --- Preview handlers ---
   const handlePreview = (fileItem) => {
     setPreviewFile({
       name: fileItem.name,
-      path: currentPath, // FileCard only knows its name, App knows the currentPath
+      path: currentPath,
     });
   };
-
-  // Create a handler to close the preview
-  const handleClosePreview = () => {
-    setPreviewFile(null);
-  };
-  
-  // --- End Modal Handlers ---
+  const handleClosePreview = () => setPreviewFile(null);
 
   return (
-    <div className="min-w-[100%] min-h-screen bg-slate-50 p-4 sm:p-6">
+    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 relative">
       <div className="max-w-7xl mx-auto">
         <h1 className="text-3xl sm:text-4xl font-extrabold mb-6 tracking-tight bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
           LAN File Explorer
@@ -219,29 +203,6 @@ export default function App() {
           changeDrive={changeDrive}
           baseURL={baseURL}
         />
-
-        <form
-          onSubmit={handleUpload}
-          className="flex flex-wrap items-center gap-4 mt-5 bg-white p-4 rounded-xl shadow-md hover:shadow-lg transition-shadow duration-200 border border-slate-200"
-        >
-          <input
-            type="file"
-            name="file"
-            required
-            className="flex-1 w-full sm:w-auto text-sm text-slate-500
-                    file:mr-4 file:py-2 file:px-4
-                    file:rounded-lg file:border-0 file:text-sm file:font-semibold
-                    file:bg-blue-50 file:text-blue-700
-                    hover:file:bg-blue-100 transition-colors duration-200 cursor-pointer"
-          />
-          <button
-            type="submit"
-            disabled={uploading || !baseURL} // 👈 Disable if no backend
-            className="w-full sm:w-auto bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 font-semibold shadow-sm hover:shadow-md transition-all duration-200 disabled:opacity-75 disabled:cursor-not-allowed"
-          >
-            {uploading ? "Uploading..." : "Upload File"}
-          </button>
-        </form>
 
         <p className="mt-4 bg-white p-3 rounded-lg shadow-sm text-slate-600 text-sm font-mono break-all border border-slate-200">
           {currentPath || "Connecting to backend..."}
@@ -258,18 +219,69 @@ export default function App() {
                 fetchFiles(newPath);
               }}
               baseURL={baseURL}
-              onPreview={handlePreview} 
+              onPreview={handlePreview}
             />
           ))}
         </div>
       </div>
-      
-      {/* Render the modal (it will only show when previewFile is not null) */}
-      <PreviewModal
-        file={previewFile}
-        baseURL={baseURL}
-        onClose={handleClosePreview}
-      />
+
+      {/* Floating + Button */}
+      {baseURL && (
+        <button
+          onClick={() => setShowUploadModal(true)}
+          className="fixed bottom-6 right-6 w-14 h-14 rounded-full bg-blue-600 text-white text-3xl flex items-center justify-center shadow-lg hover:bg-blue-700 transition-transform hover:scale-105"
+        >
+          +
+        </button>
+      )}
+
+      {/* Upload Modal */}
+      {showUploadModal && (
+        <div
+          onClick={() => setShowUploadModal(false)}
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white p-8 rounded-xl shadow-2xl w-full max-w-md"
+          >
+            <h2 className="text-xl font-semibold mb-4 text-center text-slate-800">
+              Upload a File
+            </h2>
+            <form onSubmit={handleUpload} className="flex flex-col gap-4">
+              <input
+                type="file"
+                name="file"
+                required
+                className="text-sm text-slate-500
+                          file:mr-4 file:py-2 file:px-4
+                          file:rounded-lg file:border-0 file:text-sm file:font-semibold
+                          file:bg-blue-50 file:text-blue-700
+                          hover:file:bg-blue-100 transition-colors duration-200"
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowUploadModal(false)}
+                  className="px-4 py-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={uploading}
+                  className="px-5 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 transition-all disabled:opacity-75"
+                >
+                  {uploading ? "Uploading..." : "Upload"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Preview Modal */}
+      <PreviewModal file={previewFile} baseURL={baseURL} onClose={handleClosePreview} />
     </div>
   );
 }
